@@ -3,22 +3,22 @@
 #include <cstdlib>
 #include <conio.h>
 #include <windows.h>
+#include "sqlite3.h"
 
 using namespace std;
-// Node for linked list
+
 struct Donor {
-    string title;
+    int id;
     char name[50];
+    int age;
     char bloodType[5];
     char donationDate[11];
     Donor* next;
 };
-
-// Global variables
-Donor* head = NULL; // Head of the linked list
-Donor* tail = NULL; // Tail for queue-like operations
-
-// Function declarations
+Donor* head = NULL;
+Donor* tail = NULL;
+sqlite3* db;
+char* errMsg = 0;
 void login();
 void mainMenu();
 void recipientMenu();
@@ -29,27 +29,21 @@ void displayDonorsByDate();
 void displayDonors();
 void searchByBloodType();
 void deleteExpiredDonor();
+void loadDonorsFromDatabase();
+void saveDonorToDatabase(Donor* donor);
+void deleteDonorFromDatabase(int id);
 void pauseAndContinue();
-
-// Helper function for login
+void openDatabase();
+void closeDatabase();
+void createTable();
 void printTitle(string title) {
-    for (int i = 0; i < 20; i++) { // repeat 20 times
-        system("cls"); // clear console
+    for (int i = 0; i < 20; i++) {
+        system("cls");
         for (int j = 0; j < i; j++) {
-            cout << " "; // print spaces before title
+            cout << " ";
         }
         cout << title << endl;
-        Sleep(20); // wait for 100 milliseconds
-    }
-}
-void printTitle1(string title1) {
-    for (int i = 0; i < 20; i++) { // repeat 20 times
-        system("cls"); // clear console
-        for (int j = 0; j < i; j++) {
-            cout << " "; // print spaces before title
-        }
-        cout << title1 << endl;
-        Sleep(10); // wait for 100 milliseconds
+        Sleep(20);
     }
 }
 
@@ -72,9 +66,7 @@ void login() {
         cout << "Incorrect password. Exiting...\n";
         exit(0);
     }
-    pauseAndContinue();
 }
-// Function to validate blood type
 bool isValidBloodType(const char* bloodType) {
     const char* validBloodTypes[] = {"A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"};
     for (int i = 0; i < 8; ++i) {
@@ -82,24 +74,103 @@ bool isValidBloodType(const char* bloodType) {
     }
     return false;
 }
-
-// Function to validate date format (YYYY-MM-DD)
-bool isValidDate(const char* date) {
+bool isValidDonationDate(const char* date) {
     if (strlen(date) != 10 || date[4] != '-' || date[7] != '-') return false;
-    for (int i = 0; i < 10; ++i) {
-        if (i == 4 || i == 7) continue;
-        if (!isdigit(date[i])) return false;
+    int year = atoi(date);
+    int month = atoi(date + 5);
+    int day = atoi(date + 8);
+
+    if (year < 2025) return false;
+    if (month < 1 || month > 12) return false;
+
+    if (day < 1 || day > 31) return false;
+    if ((month == 4 || month == 6 || month == 9 || month == 11) && day > 30) return false;
+
+    if (month == 2) {
+        if ((year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)) {
+            if (day > 29) return false;
+        } else {
+            if (day > 28) return false;
+        }
     }
+
     return true;
 }
+void loadDonorsFromDatabase() {
+    const char* sql = "SELECT * FROM donors;";
+    sqlite3_stmt* stmt;
 
-// Function to add a new donor
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, 0) == SQLITE_OK) {
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            Donor* newDonor = new Donor;
+            newDonor->id = sqlite3_column_int(stmt, 0);
+            strcpy(newDonor->name, (const char*)sqlite3_column_text(stmt, 1));
+            newDonor->age = sqlite3_column_int(stmt, 2);
+            strcpy(newDonor->bloodType, (const char*)sqlite3_column_text(stmt, 3));
+            strcpy(newDonor->donationDate, (const char*)sqlite3_column_text(stmt, 4));
+            newDonor->next = NULL;
+
+            if (head == NULL) {
+                head = newDonor;
+                tail = newDonor;
+            } else {
+                tail->next = newDonor;
+                tail = newDonor;
+            }
+        }
+    }
+    sqlite3_finalize(stmt);
+}
+void saveDonorToDatabase(Donor* donor) {
+    char sql[256];
+    sprintf(sql, "INSERT INTO donors (name, age, bloodType, donationDate) VALUES ('%s', %d, '%s', '%s');",
+            donor->name, donor->age, donor->bloodType, donor->donationDate);
+
+    if (sqlite3_exec(db, sql, 0, 0, &errMsg) != SQLITE_OK) {
+        cout << "SQL error: " << errMsg << endl;
+        sqlite3_free(errMsg);
+    }
+}
+
+void deleteDonorFromDatabase(int id) {
+    char sql[256];
+    sprintf(sql, "DELETE FROM donors WHERE id = %d;", id);
+
+    if (sqlite3_exec(db, sql, 0, 0, &errMsg) != SQLITE_OK) {
+        cout << "SQL error: " << errMsg << endl;
+        sqlite3_free(errMsg);
+    }
+}
+
 void addDonor() {
     Donor* newDonor = new Donor;
+    const char* sql = "SELECT seq FROM sqlite_sequence WHERE name='donors';";
+    sqlite3_stmt* stmt;
+
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, 0) == SQLITE_OK) {
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            newDonor->id = sqlite3_column_int(stmt, 0) + 1; 
+        } else {
+    
+            newDonor->id = 1;
+        }
+        sqlite3_finalize(stmt);
+    } else {
+        cout << "Failed to fetch the last ID from the database.\n";
+        return;
+    }
 
     cout << "Enter donor name: ";
     cin.ignore();
     cin.getline(newDonor->name, 50);
+
+    cout << "Enter donor age: ";
+    cin >> newDonor->age;
+    while (newDonor->age < 18 || newDonor->age > 45) {
+        cout << "Age must be between 18 and 45 to donate.\nEnter a valid age: ";
+        cin >> newDonor->age;
+    }
+    cin.ignore();
 
     cout << "Enter blood type (A+, A-, B+, B-, AB+, AB-, O+, O-): ";
     cin.getline(newDonor->bloodType, 5);
@@ -112,14 +183,13 @@ void addDonor() {
     cout << "Enter donation date (YYYY-MM-DD): ";
     cin.getline(newDonor->donationDate, 11);
 
-    while (!isValidDate(newDonor->donationDate)) {
-        cout << "Invalid date format. Enter again (YYYY-MM-DD): ";
+    while (!isValidDonationDate(newDonor->donationDate)) {
+        cout << "Invalid date format or values. Enter again (YYYY-MM-DD): ";
         cin.getline(newDonor->donationDate, 11);
     }
 
     newDonor->next = NULL;
 
-    // Add to linked list (queue behavior)
     if (head == NULL) {
         head = newDonor;
         tail = newDonor;
@@ -128,38 +198,69 @@ void addDonor() {
         tail = newDonor;
     }
 
-    cout << "Donor added successfully!\n";
+    saveDonorToDatabase(newDonor); // Save donor to database
+    cout << "Donor added successfully! ID: " << newDonor->id << "\n";
     pauseAndContinue();
 }
-
-// Function to edit donor information
 void editDonor() {
-    char name[50];
-    cout << "Enter the name of the donor to edit: ";
-    cin.ignore();
-    cin.getline(name, 50);
+    int id;
+    cout << "Enter the ID of the donor to edit: ";
+    cin >> id;
 
     Donor* temp = head;
     while (temp != NULL) {
-        if (strcmp(temp->name, name) == 0) {
-            cout << "Enter new blood type (A+, A-, B+, B-, AB+, AB-, O+, O-): ";
-            cin.getline(temp->bloodType, 5);
+        if (temp->id == id) {
+            char newName[50];
+            int newAge = -1; 
+            char newBloodType[5];
+            char newDonationDate[11];
 
-            while (!isValidBloodType(temp->bloodType)) {
-                cout << "Invalid blood type. Enter again: ";
-                cin.getline(temp->bloodType, 5);
+            cout << "Enter new name (leave blank to keep current): ";
+            cin.ignore();
+            cin.getline(newName, 50);
+            cout << "Enter new age (leave blank to keep current): ";
+            string ageInput;
+            getline(cin, ageInput); 
+            if (!ageInput.empty()) {
+                newAge = stoi(ageInput); 
+                if (newAge < 18 || newAge > 45) {
+                    cout << "Age must be between 18 and 45 to donate.\n";
+                    cout << "Keeping current age: " << temp->age << "\n";
+                    newAge = -1; 
+                }
             }
 
-            cout << "Enter new donation date (YYYY-MM-DD): ";
-            cin.getline(temp->donationDate, 11);
-
-            while (!isValidDate(temp->donationDate)) {
-                cout << "Invalid date format. Enter again (YYYY-MM-DD): ";
-                cin.getline(temp->donationDate, 11);
+            cout << "Enter new blood type (leave blank to keep current): ";
+            cin.getline(newBloodType, 5);
+            cout << "Enter new donation date (leave blank to keep current): ";
+            cin.getline(newDonationDate, 11);
+            if (strlen(newName) > 0) {
+                strcpy(temp->name, newName);
+            }
+            if (newAge != -1) {
+                temp->age = newAge;
+            }
+            if (strlen(newBloodType) > 0) {
+                strcpy(temp->bloodType, newBloodType);
+            }
+            if (strlen(newDonationDate) > 0) {
+                strcpy(temp->donationDate, newDonationDate);
             }
 
-            cout << "Donor information updated successfully!\n";
-            displayDonors();
+            char sql[256];
+            sprintf(sql, "UPDATE donors SET name = '%s', age = %d, bloodType = '%s', donationDate = '%s' WHERE id = %d;",
+                    strlen(newName) > 0 ? temp->name : temp->name,
+                    newAge != -1 ? temp->age : temp->age,
+                    strlen(newBloodType) > 0 ? temp->bloodType : temp->bloodType,
+                    strlen(newDonationDate) > 0 ? temp->donationDate : temp->donationDate,
+                    id);
+
+            if (sqlite3_exec(db, sql, 0, 0, &errMsg) != SQLITE_OK) {
+                cout << "SQL error: " << errMsg << endl;
+                sqlite3_free(errMsg);
+            } else {
+                cout << "Donor information updated successfully!\n";
+            }
             pauseAndContinue();
             return;
         }
@@ -169,8 +270,6 @@ void editDonor() {
     cout << "Donor not found.\n";
     pauseAndContinue();
 }
-
-// Function to display donors by donation date
 void displayDonorsByDate() {
     if (head == NULL) {
         cout << "No donors to display.\n";
@@ -181,31 +280,29 @@ void displayDonorsByDate() {
     cout << "Donors in donation date order:\n";
     Donor* temp = head;
     while (temp != NULL) {
-        cout << "Name: " << temp->name << ", Blood Type: " << temp->bloodType
+        cout << "ID: " << temp->id << ", Name: " << temp->name << ", Blood Type: " << temp->bloodType
              << ", Donation Date: " << temp->donationDate << "\n";
         temp = temp->next;
     }
     pauseAndContinue();
 }
 
-// Function to display all donors
 void displayDonors() {
     if (head == NULL) {
         cout << "No donors to display.\n";
-        pauseAndContinue();
         return;
     }
 
     cout << "List of all donors:\n";
     Donor* temp = head;
     while (temp != NULL) {
-        cout << "Name: " << temp->name << ", Blood Type: " << temp->bloodType
-             << ", Donation Date: " << temp->donationDate << "\n";
+        cout << "ID: " << temp->id << ", Name: " << temp->name << ", Age: " << temp->age
+             << ", Blood Type: " << temp->bloodType << ", Donation Date: " << temp->donationDate << "\n";
         temp = temp->next;
     }
+    pauseAndContinue();
 }
 
-// Function to search donors by blood type
 void searchByBloodType() {
     char bloodType[5];
     cout << "Enter blood type to search: ";
@@ -222,7 +319,8 @@ void searchByBloodType() {
     bool found = false;
     while (temp != NULL) {
         if (strcmp(temp->bloodType, bloodType) == 0) {
-            cout << "Donor found: Name: " << temp->name << ", Donation Date: " << temp->donationDate << "\n";
+            cout << "Donor found: ID: " << temp->id << ", Name: " << temp->name
+                 << ", Donation Date: " << temp->donationDate << "\n";
             found = true;
         }
         temp = temp->next;
@@ -234,25 +332,27 @@ void searchByBloodType() {
     pauseAndContinue();
 }
 void deleteExpiredDonor() {
-    char name[50];
-    cout << "Enter the name of the donor to delete: ";
-    cin.ignore();
-    cin.getline(name, 50);
+    int id;
+    cout << "Enter the ID of the donor to delete: ";
+    cin >> id;
 
     Donor* temp = head;
     Donor* prev = NULL;
 
     while (temp != NULL) {
-        if (strcmp(temp->name, name) == 0) {
+        if (temp->id == id) {
             if (prev == NULL) {
-                head = temp->next;
+                head = temp->next; 
             } else {
-                prev->next = temp->next;
+                prev->next = temp->next; 
             }
 
             if (temp == tail) {
-                tail = prev;
+                tail = prev; 
             }
+
+            
+            deleteDonorFromDatabase(id); 
 
             delete temp;
             cout << "Donor deleted successfully!\n";
@@ -266,8 +366,6 @@ void deleteExpiredDonor() {
     cout << "Donor not found.\n";
     pauseAndContinue();
 }
-
-// Recipient menu
 void recipientMenu() {
     int choice;
     do {
@@ -292,7 +390,6 @@ void recipientMenu() {
                 break;
             case 4:
                 cout << "Returning to Main Menu...\n";
-                pauseAndContinue();
                 return;
             default:
                 cout << "Invalid choice. Try again.\n";
@@ -300,8 +397,6 @@ void recipientMenu() {
         }
     } while (choice != 4);
 }
-
-// Doctor menu
 void doctorMenu() {
     int choice;
     do {
@@ -317,7 +412,6 @@ void doctorMenu() {
         switch (choice) {
             case 1:
                 displayDonors();
-                pauseAndContinue();
                 break;
             case 2:
                 searchByBloodType();
@@ -327,7 +421,6 @@ void doctorMenu() {
                 break;
             case 4:
                 cout << "Returning to Main Menu...\n";
-                pauseAndContinue();
                 return;
             default:
                 cout << "Invalid choice. Try again.\n";
@@ -336,7 +429,6 @@ void doctorMenu() {
     } while (choice != 4);
 }
 
-// Main menu
 void mainMenu() {
     int userType;
     do {
@@ -365,28 +457,60 @@ void mainMenu() {
     } while (userType != 3);
 }
 
-// Main function
+void openDatabase() {
+    if (sqlite3_open("new_donors.db", &db) != SQLITE_OK) {
+        cerr << "Can't open database: " << sqlite3_errmsg(db) << endl;
+        exit(1);
+    }
+}
+
+void closeDatabase() {
+    sqlite3_close(db);
+}
+
+void createTable() {
+    const char* createTableSQL = "CREATE TABLE IF NOT EXISTS donors ("
+                                  "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                                  "name TEXT NOT NULL, "
+                                  "age INTEGER NOT NULL, "
+                                  "bloodType TEXT NOT NULL, "
+                                  "donationDate TEXT NOT NULL);";
+    if (sqlite3_exec(db, createTableSQL, 0, 0, &errMsg) != SQLITE_OK) {
+        cerr << "SQL error: " << errMsg << endl;
+        sqlite3_free(errMsg);
+    }
+}
+
 int main() {
+    openDatabase();
+    createTable();
+    loadDonorsFromDatabase();
+
     string title = "BLOOD-DONATION-MANAGEMENT SYSTEM";
     string title1 = "WELCOME";
     printTitle(title);
-    printTitle1(title1);
-    cout<<"____    __    ____  _______  __        ______   ______   .___  ___.  _______ "<<endl;
-	cout<<" \   \  /  \  /   / |   ____||  |      /      | /  __  \  |   \/   | |   ____|"<<endl;
-	cout<<"  \   \/    \/   /  |  |__   |  |     |  ,----'|  |  |  | |  \  /  | |  |__   "<<endl;
-	cout<<"   \            /   |   __|  |  |     |  |     |  |  |  | |  |\/|  | |   __|  "<<endl;
-	cout<<"    \    /\    /    |  |____ |  `----.|  `----.|  `--'  | |  |  |  | |  |____ "<<endl;
-	cout<<"     \__/  \__/     |_______||_______| \______| \______/  |__|  |__| |_______|"<<endl;
-    cout<<endl;
-    cout<<endl;
+    printTitle(title1);
+    cout << "____    __    ____  _______  __        ______   ______   .___  ___.  _______ " << endl;
+    cout << " \   \\  /  \\  /   / |   ____||  |      /      | /  __  \\  |   \\/   | |   ____|" << endl;
+    cout << "  \\   \\/    \\/   /  |  |__   |  |     |  ,----'|  |  |  | |  \\  /  | |  |__   " << endl;
+    cout << "   \\            /   |   __|  |  |     |  |     |  |  |  | |  |\\/|  | |   __|  " << endl;
+    cout << "    \\    /\\    /    |  |____ |  `----.|  `----.|  `--'  | |  |  |  | |  |____ " << endl;
+    cout << "     \\__/  \\__/     |_______||_______| \\______| \\______/  |__|  |__| |_______|" << endl;
+    cout << endl;
+    cout << endl;
     cout << endl;
     cout << "is made by" << endl;
     cout << "   MEMBERS NAME               ID NUMBER" << endl;
     cout << "1. Kalkidan K/Mariam          DBU1501713" << endl;
-    cout << "2. Tinbite Elias              DBUXXXXX" << endl;
-    cout << "3. Betelhem Hiluf             DBU1501054" << endl;
+    cout << "2. Tinbite Elias              DBU1501714" << endl;
+    cout << "3. Bethelhem  Hiluf           DBU1501054" << endl;
+    cout << endl;
 
-    login();
-    mainMenu();
+    login(); 
+    mainMenu(); 
+
+    closeDatabase(); 
     return 0;
 }
+
+
